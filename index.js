@@ -28,12 +28,12 @@ app.post('/webhook', (req, res) => {
     console.log('Invalid signature received');
     return res.status(401).json({ error: 'Invalid signature' });
   }
-  
+  const eventKey = req.headers['x-event-key'];
   // Extract repository and branch information
   const repoFullName = req.body.repository?.full_name;
-  const branch = req.body.push?.changes?.[0]?.new?.name;
+//  const branch = req.body.push?.changes?.[0]?.new?.name;
   
-  if (!repoFullName || !branch) {
+  if (!repoFullName) {
     return res.status(400).json({ error: 'Invalid webhook payload' });
   }
   
@@ -62,12 +62,27 @@ app.post('/webhook', (req, res) => {
   }
   
   const { path, process } = project;
-  
+    let shouldDeploy = false;
+
+  if (eventKey === 'repo:push') {
+    const branch = req.body.push?.changes?.[0]?.new?.name;
+    if (branch === 'staging') {
+      shouldDeploy = true;
+    }
+  } else if (eventKey === 'pullrequest:fulfilled') {
+    const destBranch = req.body.pullrequest?.destination?.branch?.name;
+    if (destBranch === 'staging') {
+      shouldDeploy = true;
+    }
+  }
+if (!shouldDeploy) {
+    return res.status(200).json({ message: 'Event ignored: not targeting staging' });
+  }
   // Log the deployment attempt
-  console.log(`Deploying ${repoFullName} (${branch}) to ${path}`);
+  console.log(`Deploying ${repoFullName} to ${path}`);
   
   // Execute deployment script
-  const deployScript = `${DEPLOY_SCRIPT_PATH} "${path}" "${branch}" "${process}" ${project.isBackend}`;
+  const deployScript = `${DEPLOY_SCRIPT_PATH} "${path}" "staging" "${process}" ${project.isBackend}`;
 
   exec(deployScript, (err, stdout, stderr) => {
     if (err) {
