@@ -2,10 +2,12 @@ const express = require('express');
 const { exec } = require('child_process');
 const { createHmac, randomBytes, timingSafeEqual } = require('crypto');
 const app = express();
-const PORT = process.env.PORT || 3001;
+require('dotenv').config();
+const PORT = process.env.PORT || 9898;
 
 // Load secrets from environment variables in production
-const SHARED_SECRET = process.env.WEBHOOK_SECRET || 'your_secret_token_here';
+const SHARED_SECRET = process.env.WEBHOOK_SECRET;
+
 // Load deploy script path from environment variable with fallback
 const DEPLOY_SCRIPT_PATH = process.env.DEPLOY_SCRIPT_PATH || '/home/ubuntu/deploy.sh';
 app.use(express.json({
@@ -15,60 +17,10 @@ app.use(express.json({
   }
 }));
 
-/**
- * Validates the webhook signature from Bitbucket
- * @param {Buffer} payload - Raw request body
- * @param {string} signature - X-Hub-Signature header from Bitbucket
- * @param {string} secret - Webhook secret
- * @returns {boolean} - Whether signature is valid
- */
-function validateSignature(payload, signature, secret) {
-  if (!signature || !signature.startsWith('sha256=')) {
-    return false;
-  }
-
-  const providedSignature = signature;
-  const hmac = createHmac('sha256', secret);
-  hmac.update(payload);
-  const calculatedSignature = `sha256=${hmac.digest('hex')}`;
-  
-  try {
-    return timingSafeEqual(
-      Buffer.from(providedSignature),
-      Buffer.from(calculatedSignature)
-    );
-  } catch (e) {
-    console.error('Error validating signature:', e);
-    return false;
-  }
-}
-
-/**
- * Generates a cryptographically secure random token
- * @param {number} bytes - Number of bytes for the token
- * @returns {string} - Hex-encoded random token
- */
-function generateSecureToken(bytes = 32) {
-  return randomBytes(bytes).toString('hex');
-}
-
-// Endpoint for generating a new webhook secret
-app.get('/generate-secret', (req, res) => {
-  // In production, this should be protected with authentication
-//   const apiKey = req.headers['x-api-key'];
-//   if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
-//     return res.status(401).json({ error: 'Unauthorized' });
-//   }
-  
-  const newSecret = generateSecureToken();
-  res.json({ 
-    secret: newSecret,
-    message: 'Store this secret securely. It will not be displayed again.'
-  });
-});
-
 // Main webhook endpoint for Bitbucket deployments
-app.post('/bitbucket-deploy', (req, res) => {
+app.post('/webhook', (req, res) => {
+
+
   // Validate the signature from Bitbucket
   const signature = req.headers['x-hub-signature'];
   
@@ -87,14 +39,21 @@ app.post('/bitbucket-deploy', (req, res) => {
   
   // Project configuration mapping
   const CONFIG = {
-    'your-team/your-repo': {
-      path: '/var/www/your-next-app',
-      process: 'next-app',
+    'Eytsam786/drmashroombackend': {
+      path: '/var/www/deployed/staging/drmashroombackend',
+      process: 'nest-app-backend',
+      isBackend: true,
     },
-    'your-team/staging-repo': {
-      path: '/var/www/next-staging',
-      process: 'next-staging',
+    'Eytsam786/drmashroomfe-admin': {
+      path: '/var/www/deployed/staging/drmashroomfe-admin',
+      process: 'Admin-frontend',
+      isBackend: false,
     },
+    'Eytsam786/drmashroomfrontend': {
+      path: '/var/www/deployed/staging/drmashroomfrontend',
+      process: 'studentfronted',
+      isBackend: false,
+    }
   };
   
   const project = CONFIG[repoFullName];
@@ -108,8 +67,8 @@ app.post('/bitbucket-deploy', (req, res) => {
   console.log(`Deploying ${repoFullName} (${branch}) to ${path}`);
   
   // Execute deployment script
-  const deployScript = `/home/ubuntu/deploy.sh "${path}" "${branch}" "${process}"`;
-  
+  const deployScript = `${DEPLOY_SCRIPT_PATH} "${path}" "${branch}" "${process}" ${project.isBackend}`;
+
   exec(deployScript, (err, stdout, stderr) => {
     if (err) {
       console.error('Deployment error:', stderr);
