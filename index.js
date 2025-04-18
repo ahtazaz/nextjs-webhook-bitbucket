@@ -16,7 +16,33 @@ app.use(express.json({
     req.rawBody = buf;
   }
 }));
+/**
+ * Validates the webhook signature from Bitbucket
+ * @param {Buffer} payload - Raw request body
+ * @param {string} signature - X-Hub-Signature header from Bitbucket
+ * @param {string} secret - Webhook secret
+ * @returns {boolean} - Whether signature is valid
+ */
+function validateSignature(payload, signature, secret) {
+  if (!signature || !signature.startsWith('sha256=')) {
+    return false;
+  }
 
+  const providedSignature = signature;
+  const hmac = createHmac('sha256', secret);
+  hmac.update(payload);
+  const calculatedSignature = `sha256=${hmac.digest('hex')}`;
+  
+  try {
+    return timingSafeEqual(
+      Buffer.from(providedSignature),
+      Buffer.from(calculatedSignature)
+    );
+  } catch (e) {
+    console.error('Error validating signature:', e);
+    return false;
+  }
+}
 // Main webhook endpoint for Bitbucket deployments
 app.post('/webhook', (req, res) => {
 
