@@ -1,28 +1,39 @@
 const express = require('express');
-const { exec } = require('child_process');
+const bodyParser = require('body-parser');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const { createHmac, randomBytes, timingSafeEqual } = require('crypto');
 const app = express();
 require('dotenv').config();
-const PORT = process.env.PORT || 9898;
+app.use(bodyParser.json());
 
-// Load secrets from environment variables in production
-const SHARED_SECRET = process.env.WEBHOOK_SECRET;
+const PORT = 9898;
+const LOG_FILE = path.join(__dirname, 'webhook.log');
+const locks = {}; // project-wise lock
 
-// Load deploy script path from environment variable with fallback
-const DEPLOY_SCRIPT_PATH = process.env.DEPLOY_SCRIPT_PATH || '/home/ubuntu/deploy.sh';
-app.use(express.json({
-  verify: (req, res, buf, encoding) => {
-    // Store raw body for signature verification
-    req.rawBody = buf;
-  }
-}));
-/**
- * Validates the webhook signature from Bitbucket
- * @param {Buffer} payload - Raw request body
- * @param {string} signature - X-Hub-Signature header from Bitbucket
- * @param {string} secret - Webhook secret
- * @returns {boolean} - Whether signature is valid
- */
+function log(message) {
+  const timestamp = new Date().toISOString();
+  const msg = `[${timestamp}] ${message}`;
+  console.log(msg);
+  fs.appendFileSync(LOG_FILE, msg + '\n');
+}
+
+
+const PROJECTS = {
+  'Eytsam786/drmashroombackend': {
+    dir: '/var/www/deployed/staging/drmashroombackend',
+    pm2: 'backend',
+  },
+ 'Eytsam786/drmashroomfe-admin': {
+  path: '/var/www/deployed/staging/drmashroomfe-admin',
+    pm2: 'frontend-dev',
+  },
+  'Eytsam786/drmashroomfrontend': {
+    dir:'/var/www/deployed/staging/drmashroomfrontend',
+    pm2: 'student-fronted',
+  },
+};
 function validateSignature(payload, signature, secret) {
   if (!signature || !signature.startsWith('sha256=')) {
     return false;
@@ -43,97 +54,77 @@ function validateSignature(payload, signature, secret) {
     return false;
   }
 }
-// Main webhook endpoint for Bitbucket deployments
-app.post('/webhook', (req, res) => {
-
-
-  // Validate the signature from Bitbucket
-  const signature = req.headers['x-hub-signature'];
+app.post('/webhook', async (req, res) => {
+    // Validate the signature from Bitbucket
+    const signature = req.headers['x-hub-signature'];
   
-  if (!validateSignature(req.rawBody, signature, SHARED_SECRET)) {
-    console.log('Invalid signature received');
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-  const eventKey = req.headers['x-event-key'];
-  // Extract repository and branch information
-  const repoFullName = req.body.repository?.full_name;
-//  const branch = req.body.push?.changes?.[0]?.new?.name;
-  
-  if (!repoFullName) {
-    return res.status(400).json({ error: 'Invalid webhook payload' });
-  }
-  
-  // Project configuration mapping
-  const CONFIG = {
-    'Eytsam786/drmashroombackend': {
-      path: '/var/www/deployed/staging/drmashroombackend',
-      process: 'nest-app-backend',
-      isBackend: true,
-    },
-    'Eytsam786/drmashroomfe-admin': {
-      path: '/var/www/deployed/staging/drmashroomfe-admin',
-      process: 'Admin-frontend',
-      isBackend: false,
-    },
-    'Eytsam786/drmashroomfrontend': {
-      path: '/var/www/deployed/staging/drmashroomfrontend',
-      process: 'studentfronted',
-      isBackend: false,
+    if (!validateSignature(req.rawBody, signature, SHARED_SECRET)) {
+      console.log('Invalid signature received');
+      return res.status(401).json({ error: 'Invalid signature' });
     }
-  };
-  
-  const project = CONFIG[repoFullName];
+  const event = req.headers['x-event-key'];
+  const body = req.body;
+
+  if (!body || !body.repository || !body.push) {
+    return res.status(400).send('Invalid payload');
+  }
+
+  const repoName = body.repository.full_name;
+  const project = PROJECTS[repoName];
+
   if (!project) {
-    return res.status(400).json({ error: 'Repository not configured for deployment' });
+    return res.status(200).send('Repo not configured.');
   }
-  
-  const { path, process } = project;
-    let shouldDeploy = false;
 
-  if (eventKey === 'repo:push') {
-    const branch = req.body.push?.changes?.[0]?.new?.name;
-    if (branch === 'staging') {
-      shouldDeploy = true;
-    }
-  } else if (eventKey === 'pullrequest:fulfilled') {
-    const destBranch = req.body.pullrequest?.destination?.branch?.name;
-    if (destBranch === 'staging') {
-      shouldDeploy = true;
-    }
-  }
-if (!shouldDeploy) {
-    return res.status(200).json({ message: 'Event ignored: not targeting staging' });
-  }
-  // Log the deployment attempt
-  console.log(`Deploying ${repoFullName} to ${path}`);
-  
-  // Execute deployment script
-  const deployScript = `${DEPLOY_SCRIPT_PATH} "${path}" "staging" "${process}" ${project.isBackend}`;
+  const changes = body.push.changes || [];
+  const relevant = changes.find(c => c.new?.name === 'staging');
 
-  exec(deployScript, (err, stdout, stderr) => {
-    if (err) {
-      console.error('Deployment error:', stderr);
-      return res.status(500).json({ 
-        error: 'Deployment failed',
-        details: stderr
-      });
+  if (!relevant) {
+    return res.status(200).send('No staging branch changes detected.');
+  }
+
+  // Lock to prevent overlapping deployments
+  if (locks[repoName]) {
+    log(`Deployment already in progress for ${repoName}. Skipping.`);
+    return res.status(200).send('Deployment already in progress.');
+  }
+
+  locks[repoName] = true;
+
+  try {
+    const commits = relevant.commits || [];
+    const packageChanged = commits.some(commit =>
+      commit.files?.some(f => f.path === 'package.json')
+    );
+
+    log(`Deploying ${repoName} to staging...`);
+    process.chdir(project.dir);
+
+    log(`Pulling latest code`);
+    execSync(`git pull origin staging`, { stdio: 'inherit' });
+
+    if (packageChanged) {
+      log(`package.json changed. Installing & building...`);
+      execSync('npm ci', { stdio: 'inherit' });
+      execSync('npm run build', { stdio: 'inherit' });
+    } else {
+      log(`package.json unchanged. Skipping install and building.`);
+      execSync('npm run build', { stdio: 'inherit' });
     }
-    
-    console.log('Deployment successful:', stdout);
-    res.json({ 
-      status: 'success',
-      message: 'Deployment completed successfully',
-      details: stdout
-    });
-  });
+
+    log(`Restarting PM2 process: ${project.pm2}`);
+    execSync(`pm2 restart ${project.pm2}`, { stdio: 'inherit' });
+
+    log(`✅ Deployed ${repoName} successfully.`);
+    res.status(200).send('Deployment complete.');
+  } catch (err) {
+    log(`❌ Deployment failed for ${repoName}: ${err.message}`);
+    res.status(500).send('Deployment failed.');
+  } finally {
+    locks[repoName] = false;
+  }
 });
 
-// Add a test endpoint to verify the server is running
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Start the server
 app.listen(PORT, () => {
-  console.log(`Bitbucket deploy webhook server running on port ${PORT}`);
+  log(`🚀 Webhook listening on port ${PORT}`);
 });
