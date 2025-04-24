@@ -1,12 +1,17 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { createHmac, randomBytes, timingSafeEqual } = require('crypto');
 const app = express();
 require('dotenv').config();
-app.use(bodyParser.json());
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    // Store raw body for signature verification
+    req.rawBody = buf;
+  }
+}));
+const SHARED_SECRET = process.env.WEBHOOK_SECRET;
 
 const PORT = 9898;
 const LOG_FILE = path.join(__dirname, 'webhook.log');
@@ -65,6 +70,7 @@ app.post('/webhook', async (req, res) => {
   const event = req.headers['x-event-key'];
   const body = req.body;
 
+  
   if (!body || !body.repository || !body.push) {
     return res.status(400).send('Invalid payload');
   }
@@ -78,7 +84,6 @@ app.post('/webhook', async (req, res) => {
 
   const changes = body.push.changes || [];
   const relevant = changes.find(c => c.new?.name === 'staging');
-
   if (!relevant) {
     return res.status(200).send('No staging branch changes detected.');
   }
@@ -96,7 +101,7 @@ app.post('/webhook', async (req, res) => {
     const packageChanged = commits.some(commit =>
       commit.files?.some(f => f.path === 'package.json')
     );
-
+    console.log("packageChanged",packageChanged);
     log(`Deploying ${repoName} to staging...`);
     process.chdir(project.dir);
 

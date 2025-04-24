@@ -5,14 +5,19 @@ Description=Webhook Deploy Server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/node /opt/deploy-webhook/server.js
-WorkingDirectory=/opt/deploy-webhook
+ExecStart=/usr/bin/node /var/www/nextjs-webhook-bitbucket/index.js
+WorkingDirectory=/var/www/nextjs-webhook-bitbucket
 Restart=always
-User=your_user
+RestartSec=10
+User=root
 Environment=NODE_ENV=production
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=webhook-server
 
 [Install]
 WantedBy=multi-user.target
+
 
 ```
 sudo systemctl daemon-reexec
