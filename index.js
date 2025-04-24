@@ -27,11 +27,11 @@ const PROJECTS = {
   },
  'Eytsam786/drmashroomfe-admin': {
   path: '/var/www/deployed/staging/drmashroomfe-admin',
-    pm2: 'frontend-dev',
+    pm2: 'AdminPannel',
   },
   'Eytsam786/drmashroomfrontend': {
     dir:'/var/www/deployed/staging/drmashroomfrontend',
-    pm2: 'student-fronted',
+    pm2: 'StudentPannel',
   },
 };
 function validateSignature(payload, signature, secret) {
